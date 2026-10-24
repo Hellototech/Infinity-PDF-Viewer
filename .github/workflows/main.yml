@@ -21,13 +21,17 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Ensure Wrapper Exists
+      - name: Ensure Wrapper and Keystore Exist
         run: |
           if [ ! -f "gradlew" ]; then
             echo "Generating missing gradlew wrapper..."
             gradle wrapper
           fi
           chmod +x gradlew
+          if [ ! -f "debug.keystore" ]; then
+            echo "Generating debug.keystore..."
+            keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
 
       - name: Build Debug APK
         run: ./gradlew assembleDebug --stacktrace
