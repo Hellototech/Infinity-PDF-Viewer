@@ -1,0 +1,6 @@
+{
+  "name": "Infinity PDF Viewer",
+  "description": "Ultra-lightweight flagship native Android PDF reader, vector annotation studio, and PDF manipulation suite.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
