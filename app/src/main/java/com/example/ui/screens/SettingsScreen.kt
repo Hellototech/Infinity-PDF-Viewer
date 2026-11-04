@@ -111,7 +111,7 @@ fun SettingsScreen(
             .padding(horizontal = 16.dp)
             .testTag("settings_screen_list"),
         verticalArrangement = Arrangement.spacedBy(14.dp),
-        contentPadding = PaddingValues(top = 12.dp, bottom = 28.dp)
+        contentPadding = PaddingValues(top = 12.dp, bottom = 96.dp)
     ) {
         item {
             Column {

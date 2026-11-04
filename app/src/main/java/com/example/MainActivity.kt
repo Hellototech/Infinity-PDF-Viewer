@@ -21,18 +21,29 @@ import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -54,24 +65,36 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -96,6 +119,12 @@ import com.example.viewmodel.InfinityPdfViewModel
 import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
+import kotlinx.coroutines.delay
+
+// Pre-allocated file-level shapes & colors for zero-allocation 60/120fps rendering
+private val LiquidGlassCapsuleShape = RoundedCornerShape(percent = 50)
+private val LiquidGlassPillShape = RoundedCornerShape(percent = 50)
+private val LiquidGlassBaseTint = Color(0xCC121216)
 
 fun hasStoragePermission(context: Context): Boolean {
     return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -139,7 +168,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.BLACK),
-            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.parseColor("#1E1E1E"))
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
         )
         if (savedInstanceState == null) {
             mainViewModel.handleIncomingViewIntent(intent)
@@ -192,6 +221,14 @@ fun InfinityPdfApp(
     val isBusy by viewModel.isBusy.collectAsStateWithLifecycle()
     val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
     val encryptedPdfDialogTitle by viewModel.encryptedPdfDialogTitle.collectAsStateWithLifecycle()
+
+    // Auto-dismiss bottom status notification banner after 2800ms once any background operation completes
+    LaunchedEffect(statusMessage, isBusy) {
+        if (statusMessage != null && !isBusy) {
+            delay(2800L)
+            viewModel.dismissStatusMessage()
+        }
+    }
 
     val isAutoUpdateEnabled by viewModel.isAutoUpdateEnabled.collectAsStateWithLifecycle()
     val availableUpdate by viewModel.availableUpdate.collectAsStateWithLifecycle()
@@ -343,52 +380,7 @@ fun InfinityPdfApp(
             .fillMaxSize()
             .background(InfinityOledBlack),
         containerColor = InfinityOledBlack,
-        contentWindowInsets = WindowInsets.safeDrawing,
-        bottomBar = {
-            if (activeDocument == null) {
-                NavigationBar(
-                    containerColor = InfinitySlateGray,
-                    tonalElevation = 0.dp,
-                    modifier = Modifier.testTag("infinity_bottom_nav")
-                ) {
-                    BottomNavTab.entries.forEach { tab ->
-                        val selected = selectedTab == tab
-                        val icon = when (tab) {
-                            BottomNavTab.LIBRARY -> if (selected) Icons.Filled.LibraryBooks else Icons.Outlined.LibraryBooks
-                            BottomNavTab.STUDIO_TOOLS -> if (selected) Icons.Filled.Construction else Icons.Outlined.Construction
-                            BottomNavTab.BOOKMARKS -> if (selected) Icons.Filled.Bookmarks else Icons.Outlined.Bookmarks
-                            BottomNavTab.SETTINGS -> if (selected) Icons.Filled.Settings else Icons.Outlined.Settings
-                        }
-                        NavigationBarItem(
-                            selected = selected,
-                            onClick = { viewModel.selectTab(tab) },
-                            icon = {
-                                Icon(
-                                    imageVector = icon,
-                                    contentDescription = tab.label
-                                )
-                            },
-                            label = {
-                                Text(
-                                    text = tab.label,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = if (selected) InfinityCrispWhite else InfinityMutedGray
-                                )
-                            },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = androidx.compose.ui.graphics.Color.White,
-                                unselectedIconColor = InfinityCrispWhite,
-                                selectedTextColor = InfinityCrispWhite,
-                                unselectedTextColor = InfinityMutedGray,
-                                // Active bottom navigation pill strictly uses Crimson Red (#ED1C24)
-                                indicatorColor = InfinityCrimsonRed
-                            ),
-                            modifier = Modifier.testTag("nav_tab_${tab.route}")
-                        )
-                    }
-                }
-            }
-        }
+        contentWindowInsets = WindowInsets.statusBars
     ) { innerPadding ->
         Box(
             modifier = Modifier
@@ -404,65 +396,71 @@ fun InfinityPdfApp(
                 val docBookmarks = remember(allBookmarks, currentDoc.id) {
                     allBookmarks.filter { it.documentId == currentDoc.id }
                 }
-                PdfReaderScreen(
-                    document = currentDoc,
-                    currentPageIndex = currentPageIndex,
-                    isOledNightMode = isOledNightMode,
-                    isVerticalContinuous = isVerticalContinuous,
-                    pageRotations = pageRotations,
-                    isKeepScreenAwake = isKeepScreenAwake,
-                    activeTool = activeTool,
-                    activeInkColorHex = activeInkColorHex,
-                    activeStrokeWidth = activeStrokeWidth,
-                    activeEraserSize = activeEraserSize,
-                    activeStampLabel = activeStampLabel,
-                    documentAnnotations = docAnnotations,
-                    documentBookmarks = docBookmarks,
-                    onCloseReader = { viewModel.closeReader() },
-                    onSelectPage = { viewModel.setCurrentPage(it) },
-                    onToggleNightMode = { viewModel.toggleOledNightMode() },
-                    onToggleVerticalMode = { viewModel.toggleVerticalContinuousMode() },
-                    onRotatePage = { pageIdx -> viewModel.rotatePage(pageIdx) },
-                    onToggleKeepScreenAwake = { viewModel.toggleKeepScreenAwake() },
-                    onSelectTool = { viewModel.selectAnnotationTool(it) },
-                    onSelectInkColor = { viewModel.selectInkColor(it) },
-                    onSelectStrokeWidth = { viewModel.selectStrokeWidth(it) },
-                    onSelectEraserSize = { viewModel.selectEraserSize(it) },
-                    onSelectStampLabel = { viewModel.selectStampLabel(it) },
-                    onAddAnnotation = { pageIdx, tool, points, text ->
-                        viewModel.addStrokeAnnotation(currentDoc.id, pageIdx, tool, points, text)
-                    },
-                    onEraseNearPoint = { pageIdx, normPt ->
-                        viewModel.eraseAnnotationNearPoint(currentDoc.id, pageIdx, normPt)
-                    },
-                    onUndoAnnotation = { pageIdx ->
-                        viewModel.undoLastPageAnnotation(currentDoc.id, pageIdx)
-                    },
-                    onClearPageAnnotations = { pageIdx ->
-                        viewModel.clearAllAnnotationsOnPage(currentDoc.id, pageIdx)
-                    },
-                    onToggleBookmark = { pageIdx, label, note ->
-                        viewModel.toggleBookmarkOnPage(currentDoc.id, pageIdx, label, note)
-                    },
-                    onSaveEdits = {
-                        viewModel.saveDocumentEdits(currentDoc)
-                    },
-                    onPrintDocument = {
-                        viewModel.printActiveDocument(context, currentDoc)
-                    },
-                    onShareDocument = {
-                        viewModel.sharePdfDocument(context, currentDoc)
-                    },
-                    onExportPageAsImage = { pageIdx ->
-                        viewModel.exportAndShareActivePageAsImage(context, currentDoc, pageIdx)
-                    },
-                    onReorderPages = { survivingOrder, outTitle ->
-                        viewModel.reorderDocumentPages(currentDoc, survivingOrder, outTitle)
-                    },
-                    onEncryptedPdfDetected = {
-                        viewModel.reportEncryptedPdf(currentDoc.title)
-                    }
-                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .navigationBarsPadding()
+                ) {
+                    PdfReaderScreen(
+                        document = currentDoc,
+                        currentPageIndex = currentPageIndex,
+                        isOledNightMode = isOledNightMode,
+                        isVerticalContinuous = isVerticalContinuous,
+                        pageRotations = pageRotations,
+                        isKeepScreenAwake = isKeepScreenAwake,
+                        activeTool = activeTool,
+                        activeInkColorHex = activeInkColorHex,
+                        activeStrokeWidth = activeStrokeWidth,
+                        activeEraserSize = activeEraserSize,
+                        activeStampLabel = activeStampLabel,
+                        documentAnnotations = docAnnotations,
+                        documentBookmarks = docBookmarks,
+                        onCloseReader = { viewModel.closeReader() },
+                        onSelectPage = { viewModel.setCurrentPage(it) },
+                        onToggleNightMode = { viewModel.toggleOledNightMode() },
+                        onToggleVerticalMode = { viewModel.toggleVerticalContinuousMode() },
+                        onRotatePage = { pageIdx -> viewModel.rotatePage(pageIdx) },
+                        onToggleKeepScreenAwake = { viewModel.toggleKeepScreenAwake() },
+                        onSelectTool = { viewModel.selectAnnotationTool(it) },
+                        onSelectInkColor = { viewModel.selectInkColor(it) },
+                        onSelectStrokeWidth = { viewModel.selectStrokeWidth(it) },
+                        onSelectEraserSize = { viewModel.selectEraserSize(it) },
+                        onSelectStampLabel = { viewModel.selectStampLabel(it) },
+                        onAddAnnotation = { pageIdx, tool, points, text ->
+                            viewModel.addStrokeAnnotation(currentDoc.id, pageIdx, tool, points, text)
+                        },
+                        onEraseNearPoint = { pageIdx, normPt ->
+                            viewModel.eraseAnnotationNearPoint(currentDoc.id, pageIdx, normPt)
+                        },
+                        onUndoAnnotation = { pageIdx ->
+                            viewModel.undoLastPageAnnotation(currentDoc.id, pageIdx)
+                        },
+                        onClearPageAnnotations = { pageIdx ->
+                            viewModel.clearAllAnnotationsOnPage(currentDoc.id, pageIdx)
+                        },
+                        onToggleBookmark = { pageIdx, label, note ->
+                            viewModel.toggleBookmarkOnPage(currentDoc.id, pageIdx, label, note)
+                        },
+                        onSaveEdits = {
+                            viewModel.saveDocumentEdits(currentDoc)
+                        },
+                        onPrintDocument = {
+                            viewModel.printActiveDocument(context, currentDoc)
+                        },
+                        onShareDocument = {
+                            viewModel.sharePdfDocument(context, currentDoc)
+                        },
+                        onExportPageAsImage = { pageIdx ->
+                            viewModel.exportAndShareActivePageAsImage(context, currentDoc, pageIdx)
+                        },
+                        onReorderPages = { survivingOrder, outTitle ->
+                            viewModel.reorderDocumentPages(currentDoc, survivingOrder, outTitle)
+                        },
+                        onEncryptedPdfDetected = {
+                            viewModel.reportEncryptedPdf(currentDoc.title)
+                        }
+                    )
+                }
             } else {
                 when (selectedTab) {
                     BottomNavTab.LIBRARY -> {
@@ -541,6 +539,19 @@ fun InfinityPdfApp(
                         )
                     }
                 }
+            }
+
+            // Floating 60/120fps Liquid Glass Capsule Dock overlaid at BottomCenter when reader is closed
+            if (activeDocument == null) {
+                LiquidGlassBottomDock(
+                    selectedTab = selectedTab,
+                    onSelectTab = viewModel::selectTab,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .navigationBarsPadding()
+                        .padding(horizontal = 24.dp)
+                        .padding(bottom = 16.dp)
+                )
             }
 
             if (showInAppScannerSheet) {
@@ -650,14 +661,20 @@ fun InfinityPdfApp(
                 )
             }
 
-            // Floating Status Toast Banner (#1E1E1E with 16dp corners)
+            // Floating Status Toast Banner (#1E1E1E with 16dp corners, positioned above Liquid Glass Dock)
             AnimatedVisibility(
                 visible = statusMessage != null || isBusy,
                 enter = fadeIn(),
                 exit = fadeOut(),
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(horizontal = 16.dp, vertical = 16.dp)
+                    .navigationBarsPadding()
+                    .padding(
+                        start = 16.dp,
+                        end = 16.dp,
+                        top = 16.dp,
+                        bottom = if (activeDocument == null) 96.dp else 16.dp
+                    )
             ) {
                 Surface(
                     shape = RoundedCornerShape(16.dp),
@@ -697,6 +714,299 @@ fun InfinityPdfApp(
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * Zero-Lag 60/120fps Floating Liquid Glass Capsule Dock.
+ *
+ * Uses pre-allocated shaders inside [drawWithCache], hardware-accelerated translucent gradient layers,
+ * a 1.2.dp 3D specular glass rim border, and GPU-phase [graphicsLayer] tab transitions without
+ * expensive real-time RenderEffect blur passes.
+ */
+@Composable
+fun LiquidGlassBottomDock(
+    selectedTab: BottomNavTab,
+    onSelectTab: (BottomNavTab) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    // Pre-allocate the 3D specular glass rim border brush once
+    val specularRimBorderBrush = remember {
+        Brush.linearGradient(
+            colorStops = arrayOf(
+                0.00f to Color.White.copy(alpha = 0.55f),
+                0.35f to Color.White.copy(alpha = 0.08f),
+                0.68f to Color.White.copy(alpha = 0.08f),
+                1.00f to Color.White.copy(alpha = 0.55f)
+            )
+        )
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(68.dp)
+            .drawWithCache {
+                val widthPx = size.width
+                val heightPx = size.height
+                val capsuleRadius = CornerRadius(heightPx / 2f, heightPx / 2f)
+
+                // 1. Ambient Under-Glow Refraction Brushes (visible even over pure #000000 OLED black)
+                val crimsonUnderGlowBrush = Brush.radialGradient(
+                    colors = listOf(
+                        InfinityCrimsonRed.copy(alpha = 0.18f),
+                        InfinityCrimsonRed.copy(alpha = 0.06f),
+                        Color.Transparent
+                    ),
+                    center = Offset(widthPx * 0.50f, heightPx * 0.62f),
+                    radius = (widthPx * 0.56f).coerceAtLeast(1f)
+                )
+                val coolSheenUnderGlowBrush = Brush.radialGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.12f),
+                        Color.White.copy(alpha = 0.04f),
+                        Color.Transparent
+                    ),
+                    center = Offset(widthPx * 0.24f, heightPx * 0.25f),
+                    radius = (widthPx * 0.48f).coerceAtLeast(1f)
+                )
+
+                // 2. Frosted Liquid Glass Multi-Stop Linear Gradient Fill (top-left to bottom-right)
+                val frostedGlassFillBrush = Brush.linearGradient(
+                    colorStops = arrayOf(
+                        0.00f to Color.White.copy(alpha = 0.14f),
+                        0.52f to Color.White.copy(alpha = 0.05f),
+                        1.00f to Color.White.copy(alpha = 0.11f)
+                    ),
+                    start = Offset.Zero,
+                    end = Offset(widthPx, heightPx)
+                )
+
+                // 3. Internal Diagonal Specular Highlight Streak across the right side of the capsule
+                val diagonalSpecularStreakBrush = Brush.linearGradient(
+                    colorStops = arrayOf(
+                        0.00f to Color.Transparent,
+                        0.56f to Color.Transparent,
+                        0.72f to Color.White.copy(alpha = 0.12f),
+                        0.84f to Color.White.copy(alpha = 0.04f),
+                        1.00f to Color.Transparent
+                    ),
+                    start = Offset(widthPx * 0.25f, 0f),
+                    end = Offset(widthPx * 0.95f, heightPx)
+                )
+
+                // 4. Subtle top-edge curved meniscus sheen
+                val topMeniscusBrush = Brush.verticalGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.16f),
+                        Color.Transparent
+                    ),
+                    startY = 0f,
+                    endY = heightPx * 0.38f
+                )
+
+                onDrawBehind {
+                    // Ambient under-glow halo extending softly around the curved stadium edges
+                    val glowInflateX = 10.dp.toPx()
+                    val glowInflateY = 8.dp.toPx()
+                    val glowRadius = CornerRadius((heightPx / 2f) + glowInflateY, (heightPx / 2f) + glowInflateY)
+                    drawRoundRect(
+                        brush = crimsonUnderGlowBrush,
+                        topLeft = Offset(-glowInflateX, -glowInflateY * 0.5f),
+                        size = Size(widthPx + glowInflateX * 2f, heightPx + glowInflateY * 1.6f),
+                        cornerRadius = glowRadius
+                    )
+                    drawRoundRect(
+                        brush = coolSheenUnderGlowBrush,
+                        topLeft = Offset(-glowInflateX * 0.5f, -glowInflateY * 0.8f),
+                        size = Size(widthPx + glowInflateX, heightPx + glowInflateY * 1.2f),
+                        cornerRadius = glowRadius
+                    )
+
+                    // Deep translucent smoky glass base so content scrolling behind stays legible
+                    drawRoundRect(
+                        color = LiquidGlassBaseTint,
+                        cornerRadius = capsuleRadius
+                    )
+
+                    // Frosted liquid glass gradient fill
+                    drawRoundRect(
+                        brush = frostedGlassFillBrush,
+                        cornerRadius = capsuleRadius
+                    )
+
+                    // Diagonal refraction highlight streak
+                    drawRoundRect(
+                        brush = diagonalSpecularStreakBrush,
+                        cornerRadius = capsuleRadius
+                    )
+
+                    // Top meniscus specular reflection
+                    drawRoundRect(
+                        brush = topMeniscusBrush,
+                        cornerRadius = capsuleRadius
+                    )
+                }
+            }
+            .clip(LiquidGlassCapsuleShape)
+            .border(
+                width = 1.2.dp,
+                brush = specularRimBorderBrush,
+                shape = LiquidGlassCapsuleShape
+            )
+            .testTag("infinity_bottom_nav")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 6.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BottomNavTab.entries.forEach { tab ->
+                val selected = selectedTab == tab
+                LiquidGlassDockTabItem(
+                    tab = tab,
+                    selected = selected,
+                    onClick = { onSelectTab(tab) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LiquidGlassDockTabItem(
+    tab: BottomNavTab,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+
+    val animatedScale by animateFloatAsState(
+        targetValue = if (selected) 1.04f else 1.0f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMedium
+        ),
+        label = "liquid_tab_scale_${tab.route}"
+    )
+
+    val animatedPillAlpha by animateFloatAsState(
+        targetValue = if (selected) 1.0f else 0.0f,
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "liquid_tab_pill_alpha_${tab.route}"
+    )
+
+    val icon = when (tab) {
+        BottomNavTab.LIBRARY -> if (selected) Icons.Filled.LibraryBooks else Icons.Outlined.LibraryBooks
+        BottomNavTab.STUDIO_TOOLS -> if (selected) Icons.Filled.Construction else Icons.Outlined.Construction
+        BottomNavTab.BOOKMARKS -> if (selected) Icons.Filled.Bookmarks else Icons.Outlined.Bookmarks
+        BottomNavTab.SETTINGS -> if (selected) Icons.Filled.Settings else Icons.Outlined.Settings
+    }
+
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .graphicsLayer {
+                scaleX = animatedScale
+                scaleY = animatedScale
+            }
+            .drawWithCache {
+                val pillRadius = CornerRadius(size.height / 2f, size.height / 2f)
+                val borderStrokeWidthPx = 1.dp.toPx()
+
+                // Pre-cached active liquid pill inner crimson glow & glass fill
+                val crimsonInnerGlowBrush = Brush.radialGradient(
+                    colors = listOf(
+                        InfinityCrimsonRed.copy(alpha = 0.45f),
+                        InfinityCrimsonRed.copy(alpha = 0.18f),
+                        Color.Transparent
+                    ),
+                    center = Offset(size.width * 0.5f, size.height * 0.55f),
+                    radius = (size.width * 0.65f).coerceAtLeast(1f)
+                )
+
+                val liquidPillGlassFill = Brush.linearGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.22f),
+                        Color.White.copy(alpha = 0.16f),
+                        Color.White.copy(alpha = 0.10f)
+                    ),
+                    start = Offset.Zero,
+                    end = Offset(size.width, size.height)
+                )
+
+                val liquidPillBorderBrush = Brush.linearGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.45f),
+                        Color.White.copy(alpha = 0.20f),
+                        Color.White.copy(alpha = 0.35f)
+                    ),
+                    start = Offset.Zero,
+                    end = Offset(size.width, size.height)
+                )
+
+                onDrawBehind {
+                    val alpha = animatedPillAlpha
+                    if (alpha > 0.005f) {
+                        // Subtle Crimson Red inner glow inside the active liquid pill
+                        drawRoundRect(
+                            brush = crimsonInnerGlowBrush,
+                            cornerRadius = pillRadius,
+                            alpha = alpha
+                        )
+                        // Translucent liquid glass pill fill
+                        drawRoundRect(
+                            brush = liquidPillGlassFill,
+                            cornerRadius = pillRadius,
+                            alpha = alpha
+                        )
+                        // Specular 3D rim border around the active tab pill
+                        drawRoundRect(
+                            brush = liquidPillBorderBrush,
+                            cornerRadius = pillRadius,
+                            style = Stroke(width = borderStrokeWidthPx),
+                            alpha = alpha
+                        )
+                    }
+                }
+            }
+            .clip(LiquidGlassPillShape)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = ripple(bounded = true, color = Color.White),
+                role = Role.Tab,
+                onClick = onClick
+            )
+            .testTag("nav_tab_${tab.route}")
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = tab.label,
+                tint = if (selected) InfinityCrispWhite else InfinityCrispWhite.copy(alpha = 0.78f),
+                modifier = Modifier.size(22.dp)
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = tab.label,
+                fontSize = 11.sp,
+                lineHeight = 13.sp,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                color = if (selected) InfinityCrispWhite else InfinityMutedGray,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }

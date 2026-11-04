@@ -157,7 +157,7 @@ fun BookmarksWorkspaceScreen(
             } else {
                 LazyColumn(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
-                    contentPadding = PaddingValues(bottom = 24.dp),
+                    contentPadding = PaddingValues(bottom = 96.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
                     items(bookmarks, key = { it.id }) { bm ->
@@ -232,7 +232,7 @@ fun BookmarksWorkspaceScreen(
             } else {
                 LazyColumn(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
-                    contentPadding = PaddingValues(bottom = 24.dp),
+                    contentPadding = PaddingValues(bottom = 96.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
                     items(annotations, key = { it.id }) { ann ->

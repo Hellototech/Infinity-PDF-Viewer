@@ -215,7 +215,7 @@ fun StudioToolsScreen(
             columns = GridCells.Fixed(2),
             verticalArrangement = Arrangement.spacedBy(12.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
-            contentPadding = PaddingValues(bottom = 24.dp),
+            contentPadding = PaddingValues(bottom = 96.dp),
             modifier = Modifier
                 .fillMaxSize()
                 .testTag("studio_tools_grid")

@@ -118,6 +118,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -130,13 +131,16 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.AnnotationToolType
@@ -242,8 +246,21 @@ fun PdfReaderScreen(
         initialFirstVisibleItemIndex = currentPageIndex.coerceIn(0, (document.pageCount - 1).coerceAtLeast(0))
     )
 
-    var zoomScale by remember(currentPageIndex) { mutableFloatStateOf(1f) }
-    var panOffset by remember(currentPageIndex) { mutableStateOf(Offset.Zero) }
+    var zoomScale by remember(document.id, isVerticalContinuous) { mutableFloatStateOf(1f) }
+    var panOffset by remember(document.id, isVerticalContinuous) { mutableStateOf(Offset.Zero) }
+    var viewportSize by remember { mutableStateOf(IntSize.Zero) }
+    val currentZoomScale by rememberUpdatedState(zoomScale)
+
+    val animatedViewportZoom by animateFloatAsState(
+        targetValue = zoomScale,
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "viewport_zoom_scale"
+    )
+    val animatedViewportPan by animateOffsetAsState(
+        targetValue = panOffset,
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "viewport_pan_offset"
+    )
 
     var pendingNoteTapPoint by remember { mutableStateOf<NormalizedPoint?>(null) }
     var pendingNoteText by remember { mutableStateOf("") }
@@ -300,6 +317,91 @@ fun PdfReaderScreen(
             }
         }
     }
+
+    val applyViewportTransformGesture: (Offset, Float) -> Unit = { panChange, zoomChange ->
+        isToolkitExpanded = false
+        val newZoom = (zoomScale * zoomChange).coerceIn(1f, 4f)
+        if (newZoom > 1.01f) {
+            zoomScale = newZoom
+            val viewportWidthPx = viewportSize.width.toFloat().coerceAtLeast(1f)
+            val viewportHeightPx = viewportSize.height.toFloat().coerceAtLeast(1f)
+            val maxPanX = (viewportWidthPx * (newZoom - 1f)) / 2f
+            val maxPanY = (viewportHeightPx * (newZoom - 1f)) / 2f
+
+            val nextPanX = (panOffset.x + panChange.x).coerceIn(-maxPanX, maxPanX)
+            var currentPanY = panOffset.y
+            var remainingDy = panChange.y
+
+            // Step 1: If panOffset.y is displaced in the opposite direction of the drag,
+            // smoothly return panOffset.y toward 0f first so reversing from top/bottom edges is instant.
+            if ((currentPanY > 0f && remainingDy < 0f) || (currentPanY < 0f && remainingDy > 0f)) {
+                val nextPanY = if (currentPanY > 0f) {
+                    (currentPanY + remainingDy).coerceAtLeast(0f)
+                } else {
+                    (currentPanY + remainingDy).coerceAtMost(0f)
+                }
+                val consumedByPan = nextPanY - currentPanY
+                currentPanY = nextPanY.coerceIn(-maxPanY, maxPanY)
+                remainingDy -= consumedByPan
+            }
+
+            // Step 2: In continuous vertical scroll mode, scroll LazyColumn through pages at 1:1 finger speed.
+            if (isVerticalContinuous && abs(remainingDy) > 0.01f) {
+                val scrollDeltaToDispatch = -remainingDy / newZoom
+                val consumedByList = verticalListState.dispatchRawDelta(scrollDeltaToDispatch)
+                val visualConsumedDy = -consumedByList * newZoom
+                remainingDy -= visualConsumedDy
+                mostVisiblePageInContinuous?.let { visibleIdx ->
+                    if (visibleIdx != currentPageIndex) {
+                        onSelectPage(visibleIdx)
+                    }
+                }
+            }
+
+            // Step 3: Apply any remaining vertical delta to panOffset.y within [-maxPanY, maxPanY]
+            // so the very top edge of Page 1, bottom edge of the last page, and all 4 corners are reachable.
+            val finalPanY = (currentPanY + remainingDy).coerceIn(-maxPanY, maxPanY)
+            panOffset = Offset(x = nextPanX, y = finalPanY)
+        } else {
+            zoomScale = 1f
+            panOffset = Offset.Zero
+        }
+    }
+
+    val applyDoubleTapZoom: (Int, Offset, Size) -> Unit = { pageIdx, tapOffset, canvasSize ->
+        isToolkitExpanded = false
+        if (currentPageIndex != pageIdx) {
+            onSelectPage(pageIdx)
+        }
+        if (zoomScale > 1.01f) {
+            zoomScale = 1f
+            panOffset = Offset.Zero
+        } else {
+            val targetZoom = 2.0f
+            val viewportWidthPx = viewportSize.width.toFloat().coerceAtLeast(canvasSize.width).coerceAtLeast(1f)
+            val viewportHeightPx = viewportSize.height.toFloat().coerceAtLeast(canvasSize.height).coerceAtLeast(1f)
+            val maxPanX = (viewportWidthPx * (targetZoom - 1f)) / 2f
+            val maxPanY = (viewportHeightPx * (targetZoom - 1f)) / 2f
+            val centerX = canvasSize.width / 2f
+            val targetPanX = ((centerX - tapOffset.x) * (targetZoom - 1f))
+                .coerceIn(-maxPanX, maxPanX)
+            val targetPanY = if (isVerticalContinuous) {
+                val itemTop = verticalListState.layoutInfo.visibleItemsInfo
+                    .find { it.index == pageIdx }?.offset?.toFloat()
+                    ?: ((viewportHeightPx - canvasSize.height) / 2f)
+                val viewportTapY = itemTop + tapOffset.y
+                (((viewportHeightPx / 2f) - viewportTapY) * (targetZoom - 1f))
+                    .coerceIn(-maxPanY, maxPanY)
+            } else {
+                val centerY = canvasSize.height / 2f
+                ((centerY - tapOffset.y) * (targetZoom - 1f))
+                    .coerceIn(-maxPanY, maxPanY)
+            }
+            zoomScale = targetZoom
+            panOffset = Offset(targetPanX, targetPanY)
+        }
+    }
+    val currentApplyViewportTransform by rememberUpdatedState(applyViewportTransformGesture)
 
     // Helper to navigate to a page and scroll continuous LazyColumn if active
     val navigateToPage: (Int) -> Unit = { targetPage ->
@@ -599,167 +701,161 @@ fun PdfReaderScreen(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .background(InfinityOledBlack),
+                .clipToBounds()
+                .background(InfinityOledBlack)
+                .onSizeChanged { viewportSize = it }
+                .pointerInput(document.id, isVerticalContinuous, activeTool) {
+                    if (activeTool == AnnotationToolType.VIEW) {
+                        val touchSlop = viewConfiguration.touchSlop
+                        awaitEachGesture {
+                            awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                            isToolkitExpanded = false
+                            var isPanningOrZooming = false
+                            var totalPanSinceDown = Offset.Zero
+                            do {
+                                val event = awaitPointerEvent(pass = PointerEventPass.Initial)
+                                val pressedCount = event.changes.count { it.pressed }
+                                if (pressedCount >= 2 || currentZoomScale > 1.01f) {
+                                    val zoomChange = event.calculateZoom()
+                                    val panChange = event.calculatePan()
+                                    if (pressedCount >= 2 || abs(zoomChange - 1f) > 0.005f) {
+                                        isPanningOrZooming = true
+                                    } else if (!isPanningOrZooming) {
+                                        totalPanSinceDown += panChange
+                                        if (totalPanSinceDown.getDistance() > touchSlop) {
+                                            isPanningOrZooming = true
+                                        }
+                                    }
+                                    if (isPanningOrZooming && (abs(zoomChange - 1f) > 0.001f || panChange != Offset.Zero)) {
+                                        currentApplyViewportTransform(panChange, zoomChange)
+                                        event.changes.forEach { change ->
+                                            if (change.positionChanged()) {
+                                                change.consume()
+                                            }
+                                        }
+                                    }
+                                }
+                            } while (event.changes.any { it.pressed })
+                        }
+                    }
+                },
             contentAlignment = Alignment.Center
         ) {
-            if (isVerticalContinuous) {
-                LazyColumn(
-                    state = verticalListState,
-                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 4.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .testTag("vertical_pdf_pager")
-                ) {
-                    items(document.pageCount) { pageIdx ->
-                        val pageAnns = documentAnnotations.filter { it.pageIndex == pageIdx }
-                        val isCurrentZoomedPage = pageIdx == currentPageIndex
-                        val pageRotation = (pageRotations[pageIdx] ?: 0).toFloat()
-                        InteractivePdfPageCanvas(
-                            filePath = document.filePath,
-                            pageIndex = pageIdx,
-                            invertForOledNight = isOledNightMode,
-                            currentRotation = pageRotation,
-                            activeTool = activeTool,
-                            activeInkColorHex = activeInkColorHex,
-                            activeStrokeWidth = activeStrokeWidth,
-                            activeEraserSize = activeEraserSize,
-                            activeStampLabel = activeStampLabel,
-                            pageAnnotations = pageAnns,
-                            zoomScale = if (isCurrentZoomedPage) zoomScale else 1f,
-                            panOffset = if (isCurrentZoomedPage) panOffset else Offset.Zero,
-                            fillViewport = false,
-                            onTransformGesture = { panChange, zoomChange ->
-                                isToolkitExpanded = false
-                                if (currentPageIndex != pageIdx) {
+            // Unified Document Viewport Container (scales & pans the entire continuous LazyColumn or single page)
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        scaleX = animatedViewportZoom
+                        scaleY = animatedViewportZoom
+                        translationX = animatedViewportPan.x
+                        translationY = animatedViewportPan.y
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                if (isVerticalContinuous) {
+                    LazyColumn(
+                        state = verticalListState,
+                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .testTag("vertical_pdf_pager")
+                    ) {
+                        items(document.pageCount) { pageIdx ->
+                            val pageAnns = documentAnnotations.filter { it.pageIndex == pageIdx }
+                            val pageRotation = (pageRotations[pageIdx] ?: 0).toFloat()
+                            InteractivePdfPageCanvas(
+                                filePath = document.filePath,
+                                pageIndex = pageIdx,
+                                invertForOledNight = isOledNightMode,
+                                currentRotation = pageRotation,
+                                activeTool = activeTool,
+                                activeInkColorHex = activeInkColorHex,
+                                activeStrokeWidth = activeStrokeWidth,
+                                activeEraserSize = activeEraserSize,
+                                activeStampLabel = activeStampLabel,
+                                pageAnnotations = pageAnns,
+                                zoomScale = 1f,
+                                panOffset = Offset.Zero,
+                                fillViewport = false,
+                                onTransformGesture = { panChange, zoomChange ->
+                                    if (currentPageIndex != pageIdx) {
+                                        onSelectPage(pageIdx)
+                                    }
+                                    applyViewportTransformGesture(panChange, zoomChange)
+                                },
+                                onDoubleTapZoom = { tapOffset, canvasSize ->
+                                    applyDoubleTapZoom(pageIdx, tapOffset, canvasSize)
+                                },
+                                onToolInteractionStart = {
+                                    isToolkitExpanded = false
+                                },
+                                onCommitAnnotation = { tool, pts, txt ->
+                                    isToolkitExpanded = false
+                                    hasUnsavedEdits = true
                                     onSelectPage(pageIdx)
-                                }
-                                val newZoom = (zoomScale * zoomChange).coerceIn(1f, 4f)
-                                zoomScale = newZoom
-                                if (newZoom > 1.01f) {
-                                    val maxOffset = 450f * (newZoom - 1f)
-                                    panOffset = Offset(
-                                        x = (panOffset.x + panChange.x).coerceIn(-maxOffset, maxOffset),
-                                        y = (panOffset.y + panChange.y).coerceIn(-maxOffset, maxOffset)
-                                    )
-                                } else {
-                                    panOffset = Offset.Zero
-                                }
-                            },
-                            onDoubleTapZoom = { tapOffset, canvasSize ->
-                                isToolkitExpanded = false
-                                if (currentPageIndex != pageIdx) {
+                                    onAddAnnotation(pageIdx, tool, pts, txt)
+                                },
+                                onRequestTextNote = { normPt ->
+                                    isToolkitExpanded = false
                                     onSelectPage(pageIdx)
-                                }
-                                if (zoomScale > 1.01f) {
-                                    zoomScale = 1f
-                                    panOffset = Offset.Zero
-                                } else {
-                                    val targetZoom = 2.0f
-                                    val centerX = canvasSize.width / 2f
-                                    val centerY = canvasSize.height / 2f
-                                    val maxOffset = 450f * (targetZoom - 1f)
-                                    val targetPanX = ((centerX - tapOffset.x) * (targetZoom - 1f))
-                                        .coerceIn(-maxOffset, maxOffset)
-                                    val targetPanY = ((centerY - tapOffset.y) * (targetZoom - 1f))
-                                        .coerceIn(-maxOffset, maxOffset)
-                                    zoomScale = targetZoom
-                                    panOffset = Offset(targetPanX, targetPanY)
-                                }
-                            },
-                            onToolInteractionStart = {
-                                isToolkitExpanded = false
-                            },
-                            onCommitAnnotation = { tool, pts, txt ->
-                                isToolkitExpanded = false
-                                hasUnsavedEdits = true
-                                onSelectPage(pageIdx)
-                                onAddAnnotation(pageIdx, tool, pts, txt)
-                            },
-                            onRequestTextNote = { normPt ->
-                                isToolkitExpanded = false
-                                onSelectPage(pageIdx)
-                                pendingNoteTapPoint = normPt
-                                pendingNoteText = ""
-                            },
-                            onEraseAt = { normPt ->
-                                isToolkitExpanded = false
-                                hasUnsavedEdits = true
-                                onSelectPage(pageIdx)
-                                onEraseNearPoint(pageIdx, normPt)
-                            },
-                            onEncryptedPdfDetected = onEncryptedPdfDetected
-                        )
-                    }
-                }
-            } else {
-                val singlePageRotation = (pageRotations[currentPageIndex] ?: 0).toFloat()
-                InteractivePdfPageCanvas(
-                    filePath = document.filePath,
-                    pageIndex = currentPageIndex,
-                    invertForOledNight = isOledNightMode,
-                    currentRotation = singlePageRotation,
-                    activeTool = activeTool,
-                    activeInkColorHex = activeInkColorHex,
-                    activeStrokeWidth = activeStrokeWidth,
-                    activeEraserSize = activeEraserSize,
-                    activeStampLabel = activeStampLabel,
-                    pageAnnotations = currentPageAnnotations,
-                    zoomScale = zoomScale,
-                    panOffset = panOffset,
-                    fillViewport = true,
-                    onTransformGesture = { panChange, zoomChange ->
-                        isToolkitExpanded = false
-                        val newZoom = (zoomScale * zoomChange).coerceIn(1f, 4f)
-                        zoomScale = newZoom
-                        if (newZoom > 1.01f) {
-                            val maxOffset = 450f * (newZoom - 1f)
-                            panOffset = Offset(
-                                x = (panOffset.x + panChange.x).coerceIn(-maxOffset, maxOffset),
-                                y = (panOffset.y + panChange.y).coerceIn(-maxOffset, maxOffset)
+                                    pendingNoteTapPoint = normPt
+                                    pendingNoteText = ""
+                                },
+                                onEraseAt = { normPt ->
+                                    isToolkitExpanded = false
+                                    hasUnsavedEdits = true
+                                    onSelectPage(pageIdx)
+                                    onEraseNearPoint(pageIdx, normPt)
+                                },
+                                onEncryptedPdfDetected = onEncryptedPdfDetected
                             )
-                        } else {
-                            panOffset = Offset.Zero
                         }
-                    },
-                    onDoubleTapZoom = { tapOffset, canvasSize ->
-                        isToolkitExpanded = false
-                        if (zoomScale > 1.01f) {
-                            zoomScale = 1f
-                            panOffset = Offset.Zero
-                        } else {
-                            val targetZoom = 2.0f
-                            val centerX = canvasSize.width / 2f
-                            val centerY = canvasSize.height / 2f
-                            val maxOffset = 450f * (targetZoom - 1f)
-                            val targetPanX = ((centerX - tapOffset.x) * (targetZoom - 1f))
-                                .coerceIn(-maxOffset, maxOffset)
-                            val targetPanY = ((centerY - tapOffset.y) * (targetZoom - 1f))
-                                .coerceIn(-maxOffset, maxOffset)
-                            zoomScale = targetZoom
-                            panOffset = Offset(targetPanX, targetPanY)
-                        }
-                    },
-                    onToolInteractionStart = {
-                        isToolkitExpanded = false
-                    },
-                    onCommitAnnotation = { tool, pts, txt ->
-                        isToolkitExpanded = false
-                        hasUnsavedEdits = true
-                        onAddAnnotation(currentPageIndex, tool, pts, txt)
-                    },
-                    onRequestTextNote = { normPt ->
-                        isToolkitExpanded = false
-                        pendingNoteTapPoint = normPt
-                        pendingNoteText = ""
-                    },
-                    onEraseAt = { normPt ->
-                        isToolkitExpanded = false
-                        hasUnsavedEdits = true
-                        onEraseNearPoint(currentPageIndex, normPt)
-                    },
-                    onEncryptedPdfDetected = onEncryptedPdfDetected
-                )
+                    }
+                } else {
+                    val singlePageRotation = (pageRotations[currentPageIndex] ?: 0).toFloat()
+                    InteractivePdfPageCanvas(
+                        filePath = document.filePath,
+                        pageIndex = currentPageIndex,
+                        invertForOledNight = isOledNightMode,
+                        currentRotation = singlePageRotation,
+                        activeTool = activeTool,
+                        activeInkColorHex = activeInkColorHex,
+                        activeStrokeWidth = activeStrokeWidth,
+                        activeEraserSize = activeEraserSize,
+                        activeStampLabel = activeStampLabel,
+                        pageAnnotations = currentPageAnnotations,
+                        zoomScale = 1f,
+                        panOffset = Offset.Zero,
+                        fillViewport = true,
+                        onTransformGesture = { panChange, zoomChange ->
+                            applyViewportTransformGesture(panChange, zoomChange)
+                        },
+                        onDoubleTapZoom = { tapOffset, canvasSize ->
+                            applyDoubleTapZoom(currentPageIndex, tapOffset, canvasSize)
+                        },
+                        onToolInteractionStart = {
+                            isToolkitExpanded = false
+                        },
+                        onCommitAnnotation = { tool, pts, txt ->
+                            isToolkitExpanded = false
+                            hasUnsavedEdits = true
+                            onAddAnnotation(currentPageIndex, tool, pts, txt)
+                        },
+                        onRequestTextNote = { normPt ->
+                            isToolkitExpanded = false
+                            pendingNoteTapPoint = normPt
+                            pendingNoteText = ""
+                        },
+                        onEraseAt = { normPt ->
+                            isToolkitExpanded = false
+                            hasUnsavedEdits = true
+                            onEraseNearPoint(currentPageIndex, normPt)
+                        },
+                        onEncryptedPdfDetected = onEncryptedPdfDetected
+                    )
+                }
             }
 
             // Floating Editing & Annotation Toolkit Overlay
@@ -1598,6 +1694,13 @@ private fun InteractivePdfPageCanvas(
                     .width(cardWidth)
                     .height(cardHeight)
                     .clip(RoundedCornerShape(6.dp))
+                    .graphicsLayer {
+                        scaleX = animatedZoom
+                        scaleY = animatedZoom
+                        translationX = animatedPan.x
+                        translationY = animatedPan.y
+                        rotationZ = animatedRotation
+                    }
                     .pointerInput(pageIndex, activeTool) {
                         detectTapGestures(
                             onDoubleTap = { tapOffset ->
@@ -1709,13 +1812,6 @@ private fun InteractivePdfPageCanvas(
                                 }
                             )
                         }
-                    }
-                    .graphicsLayer {
-                        scaleX = animatedZoom
-                        scaleY = animatedZoom
-                        translationX = animatedPan.x
-                        translationY = animatedPan.y
-                        rotationZ = animatedRotation
                     }
                     .testTag("pdf_page_canvas_${pageIndex + 1}")
             ) {

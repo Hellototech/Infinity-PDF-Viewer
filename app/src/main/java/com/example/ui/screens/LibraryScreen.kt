@@ -351,7 +351,7 @@ fun LibraryScreen(
         } else {
             LazyColumn(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
-                contentPadding = PaddingValues(bottom = 24.dp),
+                contentPadding = PaddingValues(bottom = 96.dp),
                 modifier = Modifier
                     .fillMaxSize()
                     .testTag("pdf_document_list")
